@@ -1,0 +1,12 @@
+# Ignore local Streamlit secrets (DO NOT COMMIT)
+.streamlit/secrets.toml
+
+# Ignore virtual environments
+venv/
+.venv/
+env/
+
+# Ignore Python cache & temporary files
+__pycache__/
+*.pyc
+.DS_Store
