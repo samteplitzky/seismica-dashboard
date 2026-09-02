@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Set page config
 st.set_page_config(page_title="Seismica Journal Dashboard", layout="wide")
@@ -13,7 +13,21 @@ st.markdown("Live bibliometric insights powered by the OpenAlex API.")
 
 SOURCE_ID = "s4387284412"
 
-# 1. Fetch Data from OpenAlex API
+# OpenAlex Source IDs for Diamond Open Access Earth Science Journals
+DIAMOND_OA_JOURNALS = {
+    "Seismica": "s4387284412",
+    "Volcanica": "S4210167754",
+    "Tektonika": "S4387287549",
+    "Sedimentologika": "sS4387287832",
+    "Geomorphica": "S4404675134",
+    "Adv. Geochem. Cosmochem.": "S5407040222",
+    "ARC Geophysical Research": "S5407048916"
+}
+
+# =====================================================================
+# 1. HELPER FUNCTIONS & API FETCHERS
+# =====================================================================
+
 @st.cache_data(ttl=3600)
 def fetch_seismica_data(source_id):
     base_url = "https://api.openalex.org/works"
@@ -69,6 +83,44 @@ def fetch_seismica_data(source_id):
             break
         
     return all_works
+@st.cache_data(ttl=86400)
+def fetch_diamond_oa_trends(journal_dict, api_key=None):
+    base_url = "https://api.openalex.org/works"
+    headers = {"User-Agent": "SeismicaDashboard/1.0 (mailto:admin@example.com)"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    records = []
+    
+    for journal_name, source_id in journal_dict.items():
+        params = {
+            "filter": f"primary_location.source.id:{source_id}",
+            "group_by": "publication_year"
+        }
+        if api_key:
+            params["api_key"] = api_key
+
+        try:
+            res = requests.get(base_url, headers=headers, params=params, timeout=10)
+            if res.status_code == 200:
+                data = res.json().get("group_by", [])
+                for group in data:
+                    year = group.get("key")
+                    count = group.get("count", 0)
+                    if year and int(year) >= 2018:  # Filter for recent operating years
+                        records.append({
+                            "Journal": journal_name,
+                            "Year": int(year),
+                            "Publications": count
+                        })
+        except Exception:
+            continue
+
+    return pd.DataFrame(records)
+
+# =====================================================================
+# 2. FETCH & PROCESS DATA
+# =====================================================================
 
 with st.spinner("Fetching data from OpenAlex..."):
     works = fetch_seismica_data(SOURCE_ID)
@@ -77,21 +129,19 @@ if not works:
     st.error("No data found or failed to fetch data from OpenAlex.")
     st.stop()
 
-# 2. Process Data into Pandas DataFrames
 processed_data = []
 counts_by_year_list = []
 institution_list = []
 country_code_list = []
 
-
 for w in works:
-    # Extract primary topic safely
-    primary_topic_data = w.get("primary_topic")
-    if isinstance(primary_topic_data, dict):
-        primary_topic = primary_topic_data.get("display_name", "Unknown")
+    # --- EXTRACT KEYWORDS ---
+    raw_keywords = w.get("keywords", [])
+    if raw_keywords and isinstance(raw_keywords, list):
+        kw_list = [k.get("display_name") for k in raw_keywords if isinstance(k, dict) and k.get("display_name")]
+        keywords_str = ", ".join(kw_list[:3]) if kw_list else "None"
     else:
-        topics = [t.get("display_name") for t in w.get("topics", []) if isinstance(t, dict)]
-        primary_topic = topics[0] if topics else "Unknown"
+        keywords_str = "None"
     
     # Extract first author
     authorships = w.get("authorships", [])
@@ -103,13 +153,13 @@ for w in works:
 
     # Extract institutional affiliations for all authors
     for auth in authorships:
-            if isinstance(auth, dict):
-                for inst in auth.get("institutions", []):
-                    if isinstance(inst, dict):
-                        if inst.get("display_name"):
-                            institution_list.append(inst.get("display_name"))
-                        if inst.get("country_code"):
-                            country_code_list.append(inst.get("country_code").upper())
+        if isinstance(auth, dict):
+            for inst in auth.get("institutions", []):
+                if isinstance(inst, dict):
+                    if inst.get("display_name"):
+                        institution_list.append(inst.get("display_name"))
+                    if inst.get("country_code"):
+                        country_code_list.append(inst.get("country_code").upper())
     
     pub_year = w.get("publication_year")
     
@@ -122,11 +172,11 @@ for w in works:
         "cited_by_count": w.get("cited_by_count", 0),
         "type": w.get("type", "Unknown"),
         "doi": w.get("doi"),
-        "primary_topic": primary_topic,
+        "keywords": keywords_str,
         "author_count": len(authorships)
     })
 
-    # Collect year-by-year citation breakdown for 2-year citedness calculation
+    # Collect year-by-year citation breakdown
     for cby in w.get("counts_by_year", []):
         counts_by_year_list.append({
             "work_id": w.get("id"),
@@ -140,7 +190,10 @@ cby_df = pd.DataFrame(counts_by_year_list)
 inst_df = pd.DataFrame({"institution": institution_list})
 country_df = pd.DataFrame({"country_code": country_code_list})
 
-# --- DASHBOARD METRICS ---
+# =====================================================================
+# 3. DASHBOARD METRICS
+# =====================================================================
+
 total_papers = len(df)
 total_citations = int(df["cited_by_count"].sum())
 avg_citations = round(df["cited_by_count"].mean(), 2) if total_papers > 0 else 0.0
@@ -152,7 +205,45 @@ col3.metric("Avg. Citations per Paper", avg_citations)
 
 st.markdown("---")
 
-# --- 2-YEAR MEAN CITEDNESS SECTION (2024 & 2025 ONLY) ---
+# =====================================================================
+# 4. RECENT PUBLICATIONS SECTION
+# =====================================================================
+
+st.subheader("🆕 Recent Publications")
+
+days_lookback = st.selectbox(
+    "Show works published in the last:",
+    options=[7, 14, 30],
+    index=0,
+    format_func=lambda x: f"{x} days"
+)
+
+cutoff_date = (datetime.now() - timedelta(days=days_lookback)).strftime("%Y-%m-%d")
+
+recent_df = df[df["publication_date"] >= cutoff_date].sort_values(
+    by="publication_date", ascending=False
+)
+
+if not recent_df.empty:
+    st.success(f"Found **{len(recent_df)}** paper(s) published in the last {days_lookback} days.")
+    
+    display_recent = recent_df[["title", "author", "publication_date", "doi"]].copy()
+    display_recent.columns = ["Title", "First Author", "Publication Date", "DOI"]
+    
+    def make_clickable(val):
+        return f'<a href="{val}" target="_blank">{val}</a>' if val and pd.notna(val) else "N/A"
+    
+    display_recent["DOI"] = display_recent["DOI"].apply(make_clickable)
+    st.write(display_recent.to_html(escape=False, index=False), unsafe_allow_html=True)
+else:
+    st.info(f"No papers published in the last {days_lookback} days.")
+
+st.markdown("---")
+
+# =====================================================================
+# 5. 2-YEAR MEAN CITEDNESS SECTION
+# =====================================================================
+
 st.subheader("📈 2-Year Mean Citedness (2024 & 2025)")
 st.markdown(
     "Measures the average number of citations received in 2024 and 2025 by items published in *Seismica* during the prior two years (analogous to 2-Year Journal Impact Factor)."
@@ -192,7 +283,6 @@ if not cby_df.empty:
 citedness_df = pd.DataFrame(citedness_records)
 
 if not citedness_df.empty:
-    # 1. Top Section: Metric KPI + Data Table side-by-side
     metric_col, table_col = st.columns([1, 2])
     
     with metric_col:
@@ -208,25 +298,25 @@ if not citedness_df.empty:
 
 st.markdown("---")
 
-# --- VISUALIZATIONS ---
+# =====================================================================
+# 6. VISUALIZATIONS SECTION
+# =====================================================================
+
 chart_col1, inst_col = st.columns(2)
 
 with chart_col1:
     st.subheader("📊 Publications Over Time by Document Type")
     
-    # Group by year and document type
     pub_type_df = df.dropna(subset=["publication_year"]).groupby(
         ["publication_year", "type"]
     ).size().reset_index(name="Count")
     pub_type_df["publication_year"] = pub_type_df["publication_year"].astype(int)
     
-    # Create stacked bar chart using the same color palette as pie chart
     fig_pub_stack = px.bar(
         pub_type_df,
         x="publication_year",
         y="Count",
         color="type",
-        # title="Publications Over Time (Breakdown by Document Type)",
         color_discrete_sequence=px.colors.qualitative.Safe,
         labels={"publication_year": "Year", "Count": "Number of Publications", "type": "Document Type"}
     )
@@ -253,7 +343,10 @@ with inst_col:
 
 st.markdown("---")
 
-# --- AUTHOR GEOGRAPHIC DISTRIBUTION SECTION (FIRST AUTHOR ONLY) ---
+# =====================================================================
+# 7. GEOGRAPHIC DISTRIBUTION SECTION
+# =====================================================================
+
 st.subheader("🌍 Geographic Distribution of First Author Affiliations")
 
 first_author_country_codes = []
@@ -269,7 +362,6 @@ for w in works:
 first_author_country_df = pd.DataFrame({"country_code": first_author_country_codes})
 
 if not first_author_country_df.empty:
-    # ISO-2 to ISO-3 lookup dictionary
     ISO2_TO_ISO3 = {
         'AF': 'AFG', 'AL': 'ALB', 'DZ': 'DZA', 'AS': 'ASM', 'AD': 'AND', 'AO': 'AGO', 'AI': 'AIA', 'AQ': 'ATA',
         'AG': 'ATG', 'AR': 'ARG', 'AM': 'ARM', 'AW': 'ABW', 'AU': 'AUS', 'AT': 'AUT', 'AZ': 'AZE', 'BS': 'BHS',
@@ -302,10 +394,7 @@ if not first_author_country_df.empty:
         'EH': 'ESH', 'YE': 'YEM', 'ZM': 'ZMB', 'ZW': 'ZWE'
     }
 
-    # Map country codes to ISO-3
     first_author_country_df["country_iso3"] = first_author_country_df["country_code"].map(ISO2_TO_ISO3)
-    
-    # Aggregate counts by ISO-3 code
     country_counts = first_author_country_df["country_iso3"].dropna().value_counts().reset_index()
     country_counts.columns = ["country_iso3", "Count"]
 
@@ -332,7 +421,10 @@ else:
 
 st.markdown("---")
 
-# --- INSTITUTIONAL AFFILIATIONS & HIGH IMPACT PAPERS ---
+# =====================================================================
+# 8. TOP 5 MOST CITED WORKS & DATA EXPLORER
+# =====================================================================
+
 st.subheader("🔥 Top 5 Most Cited Works")
 top_papers = df.sort_values(by="cited_by_count", ascending=False).head(5)[
     ["title", "author", "publication_year", "cited_by_count", "doi"]
@@ -348,6 +440,85 @@ st.write(top_papers.to_html(escape=False, index=False), unsafe_allow_html=True)
 
 st.markdown("---")
 
-# --- DATA EXPLORER ---
 st.subheader("🔍 Data Explorer")
-st.dataframe(df[["title", "author", "publication_year", "type", "cited_by_count", "author_count", "primary_topic"]], use_container_width=True)
+st.dataframe(
+    df[["title", "author", "publication_date", "cited_by_count", "author_count", "keywords"]],
+    use_container_width=True,
+    hide_index=True
+)
+
+st.markdown("---")
+
+# =====================================================================
+# 9. DIAMOND OPEN ACCESS JOURNALS IN THE EARTH SCIENCES
+# =====================================================================
+
+st.subheader("💎 Diamond Open Access Journals in the Earth Sciences")
+st.markdown(
+    "Seismica is one of many community-led, Diamond Open Access journals in Earth, Planetary, and Environmental Sciences."
+)
+
+api_key = None
+try:
+    if "OPENALEX_API_KEY" in st.secrets:
+        api_key = st.secrets["OPENALEX_API_KEY"]
+except Exception:
+    api_key = None
+
+with st.spinner("Fetching comparative trends for Diamond OA journals..."):
+    diamond_df = fetch_diamond_oa_trends(DIAMOND_OA_JOURNALS, api_key)
+
+if not diamond_df.empty:
+    # 8-color Okabe-Ito Color-Blind Friendly Palette + 1 distinct neutral
+    COLOR_BLIND_PALETTE = [
+        "#0072B2",  # Deep Blue
+        "#E69F00",  # Orange
+        "#009E73",  # Bluish Green
+        "#CC79A7",  # Reddish Purple
+        "#D55E00",  # Vermilion / Red-Orange
+        "#56B4E9",  # Sky Blue
+        "#F0E442",  # Yellow
+        "#000000",  # Black
+        "#888888",  # Medium Gray
+    ]
+
+    fig_diamond = px.line(
+        diamond_df.sort_values("Year"),
+        x="Year",
+        y="Publications",
+        color="Journal",
+        symbol="Journal",  # Shape differentiation complements color perception
+        markers=True,
+        title="Annual Publication Trends Across Diamond OA Earth Science Journals",
+        color_discrete_sequence=COLOR_BLIND_PALETTE,
+        labels={"Year": "Publication Year", "Publications": "Number of Papers"}
+    )
+
+    # Increase marker size and line thickness for legibility
+    fig_diamond.update_traces(
+        marker=dict(size=9),
+        line=dict(width=2.5)
+    )
+
+    # Move legend below the chart
+    fig_diamond.update_layout(
+        xaxis=dict(dtick=1),
+        yaxis=dict(title="Number of Publications"),
+        margin=dict(l=20, r=20, t=40, b=100),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            xanchor="center",
+            x=0.5
+        )
+    )
+
+    st.plotly_chart(fig_diamond, use_container_width=True)
+
+    # Summary data matrix
+    with st.expander("📊 View Data"):
+        pivot_df = diamond_df.pivot(index="Journal", columns="Year", values="Publications").fillna(0).astype(int)
+        st.dataframe(pivot_df, use_container_width=True)
+else:
+    st.info("Unable to retrieve comparative Diamond OA metadata from OpenAlex.")
