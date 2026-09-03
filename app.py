@@ -8,8 +8,21 @@ from datetime import datetime, timedelta
 # Set page config
 st.set_page_config(page_title="Seismica Journal Dashboard", layout="wide")
 
-st.title("📊 Seismica Journal Dashboard")
-st.markdown("Live bibliometric insights powered by the OpenAlex API.")
+logo_col, title_col = st.columns([1, 12])
+
+with logo_col:
+    # Display local logo file (or pass a direct image URL string)
+    st.image("images/seismica-logo-small.png", use_container_width=True)
+
+with title_col:
+    st.markdown(
+        "<h1 style='color: #123466; margin-top: 0; margin-bottom: 0; line-height: 1.1;'>Seismica Journal Dashboard</h1>", 
+        unsafe_allow_html=True
+    )
+st.markdown(
+    "<h2 style='margin-top: -10px; line-height: 1.1;'><a href='https://www.seismica.org' target='_blank' style='color: #64C28C; text-decoration: none;'>www.seismica.org</a></h2>", 
+    unsafe_allow_html=True
+)
 
 SOURCE_ID = "s4387284412"
 
@@ -202,7 +215,6 @@ col1, col2, col3 = st.columns(3)
 col1.metric("Total Publications", total_papers)
 col2.metric("Total Citations", total_citations)
 col3.metric("Avg. Citations per Paper", avg_citations)
-
 st.markdown("---")
 
 # =====================================================================
@@ -244,7 +256,7 @@ st.markdown("---")
 # 5. 2-YEAR MEAN CITEDNESS SECTION
 # =====================================================================
 
-st.subheader("📈 2-Year Mean Citedness (2024 & 2025)")
+st.subheader("📈 2-Year Mean Citedness")
 st.markdown(
     "Measures the average number of citations received in 2024 and 2025 by items published in *Seismica* during the prior two years (analogous to 2-Year Journal Impact Factor)."
 )
@@ -522,3 +534,5 @@ if not diamond_df.empty:
         st.dataframe(pivot_df, use_container_width=True)
 else:
     st.info("Unable to retrieve comparative Diamond OA metadata from OpenAlex.")
+
+st.markdown("Live bibliometric insights powered by the OpenAlex API.")
