@@ -34,7 +34,8 @@ DIAMOND_OA_JOURNALS = {
     "Sedimentologika": "sS4387287832",
     "Geomorphica": "S4404675134",
     "Adv. Geochem. Cosmochem.": "S5407040222",
-    "ARC Geophysical Research": "S5407048916"
+    "ARC Geophysical Research": "S5407048916",
+    "Geodynamica": "S5407055641"
 }
 
 # =====================================================================
